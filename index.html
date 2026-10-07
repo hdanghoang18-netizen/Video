@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Veo Video Merger V2</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0b0d12;color:#f4f5f7;font-family:system-ui,-apple-system,Segoe UI,sans-serif}
+.wrap{max-width:760px;margin:auto;padding:22px}.card{background:#141820;border:1px solid #252b36;border-radius:18px;padding:18px;margin-bottom:14px}
+h1{margin:0 0 6px;font-size:25px}.sub{color:#9ca5b4;font-size:14px}
+input[type=file]{display:none}.pick{display:block;text-align:center;padding:16px;border:1px dashed #596273;border-radius:14px;background:#1a1f28;font-weight:700;cursor:pointer;margin-top:14px}
+button{border:0;border-radius:12px;padding:12px 16px;background:#5865f2;color:white;font-weight:800;font-size:15px;cursor:pointer}
+button:disabled{opacity:.45}.danger{background:#2a303b}.row{display:flex;gap:9px;flex-wrap:wrap;margin-top:12px}
+.item{display:flex;align-items:center;gap:10px;background:#1a1f28;border:1px solid #2a303b;border-radius:12px;padding:10px;margin-top:8px}
+.num{width:28px;height:28px;border-radius:8px;background:#252b36;display:grid;place-items:center;font-weight:800}
+.name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mini{padding:7px 9px;font-size:13px;background:#252b36}
+#log{white-space:pre-wrap;color:#b9c2d0;font-size:13px;max-height:180px;overflow:auto}
+.progress{height:10px;background:#252b36;border-radius:99px;overflow:hidden;margin-top:12px}.bar{height:100%;width:0;background:#5865f2;transition:.2s}
+.note{font-size:13px;color:#9ca5b4;line-height:1.5}
+a.download{display:none;margin-top:12px;text-align:center;background:#20b26b;color:#fff;text-decoration:none;padding:13px;border-radius:12px;font-weight:900}
+</style>
+</head>
+<body>
+<div class="wrap">
+ <div class="card">
+  <h1>🎬 Veo Video Merger V2</h1>
+  <div class="sub">Ghép các clip Veo thành một video liên tục — không chèn chữ giữa cảnh.</div>
+  <label class="pick" for="files">＋ Chọn các video Veo</label>
+  <input id="files" type="file" accept="video/*" multiple>
+  <div id="list"></div>
+  <div class="row">
+   <button id="merge" disabled>🎬 Ghép video</button>
+   <button id="clear" class="danger" disabled>🗑 Xóa hết</button>
+  </div>
+  <div class="progress"><div id="bar" class="bar"></div></div>
+  <a id="download" class="download">⬇️ Tải video đã ghép</a>
+ </div>
+ <div class="card">
+  <b>Trạng thái</b>
+  <div id="log">Sẵn sàng. Hãy chọn các clip theo thứ tự muốn ghép.</div>
+  <p class="note">Lưu ý: xử lý video trên điện thoại có thể cần vài phút và cần đủ bộ nhớ trống.</p>
+ </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+<script>
+const {FFmpeg}=FFmpegWASM;
+const {fetchFile,toBlobURL}=FFmpegUtil;
+const ffmpeg=new FFmpeg();
+let files=[];
+const $=id=>document.getElementById(id);
+function log(s){$("log").textContent=s}
+function render(){
+ const l=$("list");l.innerHTML="";
+ files.forEach((f,i)=>{
+  const d=document.createElement("div");d.className="item";
+  d.innerHTML=`<div class="num">${i+1}</div><div class="name">${f.name}</div>
+   <button class="mini" onclick="move(${i},-1)" ${i===0?"disabled":""}>↑</button>
+   <button class="mini" onclick="move(${i},1)" ${i===files.length-1?"disabled":""}>↓</button>
+   <button class="mini" onclick="removeFile(${i})">✕</button>`;
+  l.appendChild(d);
+ });
+ $("merge").disabled=files.length<2;
+ $("clear").disabled=!files.length;
+}
+window.move=(i,d)=>{let j=i+d;if(j<0||j>=files.length)return;[files[i],files[j]]=[files[j],files[i]];render()};
+window.removeFile=i=>{files.splice(i,1);render()};
+$("files").onchange=e=>{files.push(...Array.from(e.target.files));e.target.value="";render()};
+$("clear").onclick=()=>{files=[];render();$("download").style.display="none";$("bar").style.width="0";log("Đã xóa danh sách.")};
+
+async function loadFFmpeg(){
+ if(ffmpeg.loaded)return;
+ log("Đang tải bộ ghép video lần đầu…");
+ const base="https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd";
+ await ffmpeg.load({
+  coreURL:await toBlobURL(`${base}/ffmpeg-core.js`,"text/javascript"),
+  wasmURL:await toBlobURL(`${base}/ffmpeg-core.wasm`,"application/wasm")
+ });
+}
+$("merge").onclick=async()=>{
+ if(files.length<2)return;
+ $("merge").disabled=true;$("download").style.display="none";$("bar").style.width="2%";
+ try{
+  await loadFFmpeg();
+  log("Đang chuẩn bị các clip…");
+  const names=[];
+  for(let i=0;i<files.length;i++){
+   const src=`in_${i}.mp4`, out=`part_${i}.mp4`;
+   await ffmpeg.writeFile(src,await fetchFile(files[i]));
+   // Normalize every clip to a common H.264/AAC format for reliable concatenation.
+   await ffmpeg.exec([
+    "-i",src,"-vf","scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+    "-r","30","-c:v","libx264","-preset","veryfast","-crf","23",
+    "-c:a","aac","-ar","48000","-ac","2","-movflags","+faststart",out
+   ]);
+   await ffmpeg.deleteFile(src);
+   names.push(out);
+   $("bar").style.width=(10+(i+1)/files.length*55)+"%";
+   log(`Đã xử lý clip ${i+1}/${files.length}…`);
+  }
+  let list=names.map(n=>"file '"+n+"'").join("\n");
+  await ffmpeg.writeFile("list.txt",new TextEncoder().encode(list));
+  log("Đang ghép thành một video duy nhất…");
+  await ffmpeg.exec(["-f","concat","-safe","0","-i","list.txt","-c","copy","-movflags","+faststart","output.mp4"]);
+  const data=await ffmpeg.readFile("output.mp4");
+  const blob=new Blob([data.buffer],{type:"video/mp4"});
+  const url=URL.createObjectURL(blob);
+  $("download").href=url;$("download").download="veo_merged.mp4";$("download").style.display="block";
+  $("bar").style.width="100%";log("✅ Ghép xong! Nhấn “Tải video đã ghép”.");
+  for(const n of names){try{await ffmpeg.deleteFile(n)}catch(e){}}
+  try{await ffmpeg.deleteFile("list.txt");await ffmpeg.deleteFile("output.mp4")}catch(e){}
+ }catch(e){
+  console.error(e);log("❌ Không thể ghép.\n"+(e?.message||e)+"\n\nNếu điện thoại báo lỗi bộ nhớ, hãy thử ít clip hơn hoặc đóng các ứng dụng khác.");
+ }finally{$("merge").disabled=files.length<2}
+};
+render();
+</script>
+</body>
+</html>
